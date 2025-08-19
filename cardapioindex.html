@@ -2584,7 +2584,19 @@
                         imagem: processImageUrl(item.foto_url),
                         disponivel: true,
                         classificacaoAdicional: item.classificacao_adicional,
-                        observacoes: item.observacoes
+                        observacoes: item.observacoes,
+                        // === Controle de estoque ===
+                        controle_estoque: (item.controle_estoque || '').trim(),
+                        estoque_inicial: (() => {
+                            const v = parseInt((item.estoque_inicial || '').toString().replace(/\D/g, ''));
+                            return isNaN(v) ? 0 : v;
+                        })(),
+                        estoque_atual: (() => {
+                            const atual = parseInt((item.estoque_atual || '').toString().replace(/\D/g, ''));
+                            if (!isNaN(atual)) return atual;
+                            const inicial = parseInt((item.estoque_inicial || '').toString().replace(/\D/g, ''));
+                            return isNaN(inicial) ? 0 : inicial;
+                        })()
                     };
                     
                     // Add the item to each valid category
@@ -3837,10 +3849,42 @@
             });
         }
 
+        // Remover itens do carrinho sem estoque e ajustar UI
+        function sanitizeCartByStock() {
+            try {
+                let removedCount = 0;
+                cart = cart.filter(item => {
+                    const isControlled = (item.controle_estoque || '').toLowerCase() === 'sim';
+                    if (!isControlled) return true;
+                    const product = findProductById(item.id);
+                    let estoqueAtualNum = 0;
+                    if (product && typeof product.estoque_atual !== 'undefined') {
+                        estoqueAtualNum = typeof product.estoque_atual === 'number' ? product.estoque_atual : parseInt((product.estoque_atual || '').toString().replace(/\D/g, '')) || 0;
+                    } else {
+                        estoqueAtualNum = typeof item.estoque_atual === 'number' ? item.estoque_atual : parseInt((item.estoque_atual || '').toString().replace(/\D/g, '')) || 0;
+                    }
+                    if (estoqueAtualNum <= 0) {
+                        removedCount++;
+                        return false;
+                    }
+                    return true;
+                });
+                if (removedCount > 0) {
+                    if (typeof saveCartToStorage === 'function') {
+                        saveCartToStorage();
+                    }
+                    showNotification(`${removedCount} item(ns) removido(s) por indisponibilidade de estoque.`, 'warning', 4000);
+                    updateCartUI();
+                }
+            } catch (_) { /* noop */ }
+        }
+
         // Render menu sections
         function renderMenu() {
             const container = document.getElementById('menu-content');
             if (!container || !isDataLoaded) return;
+            // Sanitizar carrinho conforme estoque
+            sanitizeCartByStock();
             
             let html = '';
             // Sort categories by order and render
@@ -3879,11 +3923,19 @@
                                 const priceType = getPriceType(item.preco);
                                 const needsModal = hasVariations || priceType === 'multiple';
                                 
+                                // === Lógica de estoque ===
+                                const estoqueHabilitado = (item.controle_estoque || '').toLowerCase() === 'sim';
+                                const estoqueAtual = typeof item.estoque_atual === 'number' ? item.estoque_atual : parseInt((item.estoque_atual || '').toString().replace(/\D/g, '')) || 0;
+                                const esgotado = estoqueHabilitado && estoqueAtual <= 0;
+                                
                                 return `
-                                <div class="food-card bg-white rounded-lg p-4 shadow-sm border border-gray-100 relative cursor-pointer hover:shadow-md transition-shadow duration-300" onclick="openProductModal(${item.id})">
+                                <div class="food-card bg-white rounded-lg p-4 shadow-sm border border-gray-100 relative ${esgotado ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:shadow-md'} transition-shadow duration-300" ${esgotado ? '' : `onclick="openProductModal(${item.id})"`}>
                                     <div class="flex items-start space-x-4">
                                         <div class="flex-shrink-0">
-                                            <img src="${processImageUrl(item.imagem)}" alt="${item.nome}" class="w-20 h-20 object-cover rounded-lg lazy-image" loading="lazy" onerror="errorLog('Erro ao carregar imagem do item:', this.src, 'Item:', '${item.nome}'); this.src='${getPlaceholderImage()}'" onload="this.classList.add('loaded'); debugLog('Imagem do item carregada:', this.src)" style="background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite;">
+                                            <div class="relative">
+                                                <img src="${processImageUrl(item.imagem)}" alt="${item.nome}" class="w-20 h-20 object-cover rounded-lg lazy-image" loading="lazy" onerror="errorLog('Erro ao carregar imagem do item:', this.src, 'Item:', '${item.nome}'); this.src='${getPlaceholderImage()}'" onload="this.classList.add('loaded'); debugLog('Imagem do item carregada:', this.src)" style="background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite;">
+                                                ${esgotado ? `<div class="absolute -top-2 -right-2 bg-red-600 text-white text-[10px] px-2 py-0.5 rounded-full shadow">Esgotado</div>` : ''}
+                                            </div>
                                             <div class="text-xs text-gray-500 text-center mt-1 font-mono">${item.sku}</div>
                                         </div>
                                         <div class="flex-1 min-w-0">
@@ -3894,10 +3946,12 @@
                                             <!-- Preço em linha própria -->
                                             <div class="mt-3">
                                                 <span class="text-base font-bold" style="color: var(--cor-primaria)">${getPriceDisplay(item.preco)}</span>
+                                                ${estoqueHabilitado ? `<span class="ml-2 text-xs text-gray-500">${estoqueAtual} em estoque</span>` : ''}
                                             </div>
                                             <!-- Botão em linha própria -->
                                             <div class="mt-3 flex justify-end items-center">
-                                                ${needsModal ? `<span class="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-md flex items-center space-x-1 mr-8"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg><span>Opções</span></span>` : ''}
+                                                ${needsModal && !esgotado ? `<span class="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-md flex items-center space-x-1 mr-8"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg><span>Opções</span></span>` : ''}
+                                                ${esgotado ? `<span class="text-sm font-medium text-red-600 mr-2">Esgotado</span>` : `
                                                 <button class="add-to-cart-btn text-white px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300" 
                                                     style="background-color: var(--cor-primaria)"
                                                     onmouseenter="this.style.backgroundColor='var(--cor-primaria-escura)'" onmouseleave="this.style.backgroundColor='var(--cor-primaria)'"
@@ -3908,7 +3962,7 @@
                                                         </svg>
                                                         <span>Add</span>
                                                     </div>
-                                                </button>
+                                                </button>`}
                                             </div>
                                         </div>
                                     </div>
@@ -3926,6 +3980,17 @@
         function openProductModal(productId) {
             const product = findProductById(productId);
             if (!product) return;
+
+            // Bloquear abertura se esgotado
+            const estoqueHabilitado = (product.controle_estoque || '').toLowerCase() === 'sim';
+            if (estoqueHabilitado) {
+                const estoqueAtualNum = typeof product.estoque_atual === 'number' ? product.estoque_atual : parseInt((product.estoque_atual || '').toString().replace(/\D/g, '')) || 0;
+                if (estoqueAtualNum <= 0) {
+                    showNotification('Produto esgotado.', 'error', 3000);
+                    renderMenu();
+                    return;
+                }
+            }
 
             currentProduct = product;
             selectedVariations = {};
@@ -4476,6 +4541,14 @@
             debugLog('✅ Verificação de variações obrigatórias passou!');
             
             const quantity = parseInt(document.getElementById('modal-quantity').textContent);
+            // Controle de estoque: checar antes de adicionar
+            if (currentProduct && (currentProduct.controle_estoque || '').toLowerCase() === 'sim') {
+                const estoqueAtualNum = typeof currentProduct.estoque_atual === 'number' ? currentProduct.estoque_atual : parseInt((currentProduct.estoque_atual || '').toString().replace(/\D/g, '')) || 0;
+                if (quantity > estoqueAtualNum) {
+                    showNotification(`Quantidade indisponível. Máximo: ${estoqueAtualNum}`, 'warning', 3000);
+                    return;
+                }
+            }
             const notesElement = document.getElementById('product-notes');
             const notes = notesElement ? notesElement.value.trim() : '';
             
@@ -4503,6 +4576,20 @@
             if (typeof debugLog === 'function') {
                 debugLog('📦 Produto encontrado:', product);
             }
+
+            // === Controle de estoque: bloquear se esgotado ===
+            const estoqueHabilitado = (product.controle_estoque || '').toLowerCase() === 'sim';
+            if (estoqueHabilitado) {
+                const estoqueAtualNum = typeof product.estoque_atual === 'number' ? product.estoque_atual : parseInt((product.estoque_atual || '').toString().replace(/\D/g, '')) || 0;
+                if (estoqueAtualNum <= 0) {
+                    showNotification('Produto esgotado. Removeremos do cardápio em instantes.', 'error', 4000);
+                    renderMenu();
+                    return;
+                }
+            }
+
+            // Quantidade já existente no carrinho para este produto (somando variações/notas)
+            const alreadyInCartQty = cart.filter(ci => ci.id === productId).reduce((s, ci) => s + (parseInt(ci.quantity) || 0), 0);
 
             // Check if product has ANY variations (required or optional) and none are provided
             const productVariations = parseVariations(product.classificacaoAdicional);
@@ -4554,7 +4641,21 @@
             const existingItem = cart.find(item => item.itemKey === itemKey);
             
             if (existingItem) {
-                existingItem.quantity += quantity;
+                // Controle de estoque: não permitir ultrapassar estoque_atual
+                if (estoqueHabilitado) {
+                    const estoqueAtualNum = typeof product.estoque_atual === 'number' ? product.estoque_atual : parseInt((product.estoque_atual || '').toString().replace(/\D/g, '')) || 0;
+                    const allowedAdditional = Math.max(0, estoqueAtualNum - alreadyInCartQty);
+                    if (allowedAdditional <= 0) {
+                        showNotification(`Quantidade máxima em estoque já atingida (${estoqueAtualNum}).`, 'warning', 3000);
+                    } else if (quantity > allowedAdditional) {
+                        existingItem.quantity += allowedAdditional;
+                        showNotification(`Quantidade ajustada (+${allowedAdditional}) para atingir o limite de estoque (${estoqueAtualNum}).`, 'warning', 3000);
+                    } else {
+                        existingItem.quantity += quantity;
+                    }
+                } else {
+                    existingItem.quantity += quantity;
+                }
                 
                 // Salvar carrinho no localStorage
                 if (typeof saveCartToStorage === 'function') {
@@ -4627,15 +4728,33 @@
                     }
                 }
                 
+                // Controle de estoque: ajustar quantidade para não exceder estoque
+                let finalQuantity = quantity;
+                if (estoqueHabilitado) {
+                    const estoqueAtualNum = typeof product.estoque_atual === 'number' ? product.estoque_atual : parseInt((product.estoque_atual || '').toString().replace(/\D/g, '')) || 0;
+                    const allowedAdditional = Math.max(0, estoqueAtualNum - alreadyInCartQty);
+                    if (allowedAdditional <= 0) {
+                        showNotification('Este produto já atingiu o limite disponível no carrinho.', 'warning', 3000);
+                        return;
+                    }
+                    if (finalQuantity > allowedAdditional) {
+                        showNotification(`Quantidade ajustada para ${allowedAdditional} (estoque disponível)`, 'warning', 3000);
+                        finalQuantity = allowedAdditional;
+                    }
+                }
+
                 cart.push({
                     ...product,
                     itemKey: itemKey,
-                    quantity: quantity,
+                    quantity: finalQuantity,
                     preco: totalPrice,
                     variations: variations,
                     variationText: variationText,
                     removalText: removalText,
-                    notes: notes
+                    notes: notes,
+                    // Captura de snapshot do estoque do momento da adição
+                    estoque_atual: product.estoque_atual,
+                    controle_estoque: product.controle_estoque
                 });
                 
                 // Salvar carrinho no localStorage
@@ -5498,7 +5617,30 @@
             const item = cart.find(item => item.itemKey === itemKey);
             if (!item) return;
             
-            item.quantity += delta;
+            // Controle de estoque: respeitar limite ao incrementar
+            const estoqueHabilitado = (item.controle_estoque || '').toLowerCase() === 'sim';
+            if (delta > 0 && estoqueHabilitado) {
+                const prodRef = findProductById(item.id) || {};
+                const estoqueAtualFonte = typeof prodRef.estoque_atual !== 'undefined' ? prodRef.estoque_atual : item.estoque_atual;
+                const estoqueAtualNum = typeof estoqueAtualFonte === 'number' ? estoqueAtualFonte : parseInt((estoqueAtualFonte || '').toString().replace(/\D/g, '')) || 0;
+                // Somar todas as quantidades no carrinho para o mesmo produto (id)
+                const alreadyInCartQty = cart.filter(ci => ci.id === item.id).reduce((s, ci) => s + (parseInt(ci.quantity) || 0), 0);
+                if (alreadyInCartQty >= estoqueAtualNum) {
+                    showNotification(`Quantidade máxima em estoque: ${estoqueAtualNum}`, 'warning', 3000);
+                    item.quantity = Math.max(0, item.quantity); // mantém
+                } else {
+                    item.quantity += delta;
+                    // Ajuste de segurança se passar
+                    const newTotal = cart.filter(ci => ci.id === item.id).reduce((s, ci) => s + (parseInt(ci.quantity) || 0), 0);
+                    if (newTotal > estoqueAtualNum) {
+                        const excesso = newTotal - estoqueAtualNum;
+                        item.quantity = Math.max(0, item.quantity - excesso);
+                        showNotification(`Limite de estoque atingido (${estoqueAtualNum}). Quantidade ajustada.`, 'warning', 3000);
+                    }
+                }
+            } else {
+                item.quantity += delta;
+            }
             
             if (item.quantity <= 0) {
                 cart = cart.filter(item => item.itemKey !== itemKey);
@@ -10650,6 +10792,23 @@
             // Show success message
             showCustomAlert('Pedido enviado com sucesso! Redirecionando para WhatsApp...', 'success');
             
+            // Após preparar WhatsApp, aplicar decremento de estoque e re-render antes do reset
+            try {
+                cart.forEach(ci => {
+                    if ((ci.controle_estoque || '').toLowerCase() === 'sim') {
+                        for (const arr of Object.values(menuData)) {
+                            const prodCopy = Array.isArray(arr) ? arr.find(p => p.id === ci.id) : null;
+                            if (prodCopy && typeof prodCopy.estoque_atual !== 'undefined') {
+                                const atualNum = typeof prodCopy.estoque_atual === 'number' ? prodCopy.estoque_atual : parseInt((prodCopy.estoque_atual || '').toString().replace(/\D/g, '')) || 0;
+                                const novo = Math.max(0, atualNum - ci.quantity);
+                                prodCopy.estoque_atual = novo;
+                            }
+                        }
+                    }
+                });
+                renderMenu();
+            } catch(_) {}
+            
             // Reset completo do sistema após preparação do WhatsApp
             resetSystemAfterOrder();
             debugLog('Sistema resetado completamente após envio');
@@ -11012,6 +11171,24 @@
                 // Vamos aguardar um momento e mostrar sucesso
                 setTimeout(() => {
                     showCustomAlert('Pedido enviado com sucesso!', 'success');
+                    // Após o envio, se controle_estoque = 'Sim', reduzir estoque_atual em memória
+                    try {
+                        cart.forEach(ci => {
+                            if ((ci.controle_estoque || '').toLowerCase() === 'sim') {
+                                // Atualizar estoque em todas as cópias do produto nas categorias
+                                for (const arr of Object.values(menuData)) {
+                                    const prodCopy = Array.isArray(arr) ? arr.find(p => p.id === ci.id) : null;
+                                    if (prodCopy && typeof prodCopy.estoque_atual !== 'undefined') {
+                                        const atualNum = typeof prodCopy.estoque_atual === 'number' ? prodCopy.estoque_atual : parseInt((prodCopy.estoque_atual || '').toString().replace(/\D/g, '')) || 0;
+                                        const novo = Math.max(0, atualNum - ci.quantity);
+                                        prodCopy.estoque_atual = novo;
+                                    }
+                                }
+                            }
+                        });
+                    } catch(e) { /* noop */ }
+                    // Re-renderizar menu para refletir esgotados
+                    try { renderMenu(); } catch(_) {}
                     // Reset completo do sistema
                     resetSystemAfterOrder();
                 }, 1000); // Aguarda 1 segundo para dar tempo do webhook processar
